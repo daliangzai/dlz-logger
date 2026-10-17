@@ -7,12 +7,48 @@ from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from typing import Mapping
 
+# 自定义日志级别，注册后可直接用字符串（如 log_level="SUCCESS"）指定。
+# 完整刻度:
+#   TRACE(5) < DEBUG(10) < INFO(20) < NOTICE(22) < SUCCESS(25) < WARNING(30)
+#   < RETRY(35) < ERROR(40) < FAIL(45) < CRITICAL(50) < AUDIT(55)
+#   < ANNOUNCEMENT(60) < METRIC(65)
+TRACE = 5  # 比 DEBUG 更细，排查疑难杂症时才打开
+NOTICE = 22  # 介于 INFO 与 SUCCESS 之间：正常但值得知道的事件
+SUCCESS = 25  # 介于 INFO 与 WARNING 之间：操作成功
+RETRY = 35  # 介于 WARNING 与 ERROR 之间：临时故障正在重试
+FAIL = 45  # 介于 ERROR 与 CRITICAL 之间：失败但不致命
+AUDIT = 55  # 介于 CRITICAL 与 ANNOUNCEMENT 之间：审计日志
+ANNOUNCEMENT = 60  # 高于 CRITICAL，确保任何级别下都会输出
+METRIC = 65  # 最高级别，专供打点数据，方便采集器按级别名抓取
+
+CUSTOM_LEVELS: dict[str, int] = {
+    "TRACE": TRACE,
+    "NOTICE": NOTICE,
+    "SUCCESS": SUCCESS,
+    "RETRY": RETRY,
+    "FAIL": FAIL,
+    "AUDIT": AUDIT,
+    "ANNOUNCEMENT": ANNOUNCEMENT,
+    "METRIC": METRIC,
+}
+
+for _level_name, _level_value in CUSTOM_LEVELS.items():
+    logging.addLevelName(_level_value, _level_name)
+
 DEFAULT_COLORS = {
     "DEBUG": "\033[94m",
     "INFO": "\033[90m",
+    "NOTICE": "\033[96m",
+    "SUCCESS": "\033[92m",
     "WARNING": "\033[93m",
+    "RETRY": "\033[38;5;208m",
     "ERROR": "\033[1;91m",
+    "FAIL": "\033[38;5;205m",
     "CRITICAL": "\033[38;5;196m",
+    "AUDIT": "\033[38;5;135m",
+    "ANNOUNCEMENT": "\033[38;5;39m",
+    "METRIC": "\033[97m",
+    "TRACE": "\033[38;5;240m",
 }
 RESET_COLOR = "\033[0m"
 DEFAULT_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
@@ -28,9 +64,11 @@ def _resolve_log_level(log_level: int | str) -> int:
     level_mapping = logging.getLevelNamesMapping()
 
     if normalized_level not in level_mapping:
+        supported_levels = "、".join(
+            ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", *CUSTOM_LEVELS]
+        )
         raise ValueError(
-            f"不支持的日志级别: {log_level!r}。"
-            "可选值示例: DEBUG、INFO、WARNING、ERROR、CRITICAL。"
+            f"不支持的日志级别: {log_level!r}。可选值: {supported_levels}。"
         )
 
     return level_mapping[normalized_level]
@@ -65,6 +103,36 @@ class ColoredFormatter(logging.Formatter):
         log_message = super().format(record)
         color = self.colors.get(record.levelname, "")
         return f"{color}{log_message}{RESET_COLOR}" if color else log_message
+
+
+def _log_custom_level(
+    self: logging.Logger, level: int, msg: object, *args: object, **kwargs: object
+) -> None:
+    """按自定义级别输出日志，仅在该级别启用时才记录。"""
+    if self.isEnabledFor(level):
+        self._log(level, msg, args, **kwargs)
+
+
+def _make_level_method(level: int):
+    """生成一个绑定到指定自定义级别的日志方法。"""
+
+    def log_method(
+        self: logging.Logger, msg: object, *args: object, **kwargs: object
+    ) -> None:
+        _log_custom_level(self, level, msg, *args, **kwargs)
+
+    log_method.__name__ = logging.getLevelName(level).lower()
+    return log_method
+
+
+# 给原生 logging.Logger 补上自定义级别的方法，使 get_logger() 返回的对象同样可用。
+for _level_name, _level_value in CUSTOM_LEVELS.items():
+    setattr(
+        logging.Logger,
+        _level_name.lower(),
+        _make_level_method(_level_value),
+    )
+del _level_name, _level_value
 
 
 class LOGGER:
@@ -192,17 +260,49 @@ class LOGGER:
     def debug(self, msg: object, *args: object, **kwargs: object) -> None:
         self.logger.debug(msg, *args, **kwargs)
 
+    def trace(self, msg: object, *args: object, **kwargs: object) -> None:
+        """输出 TRACE 级别日志（暗灰，比 DEBUG 更细）。"""
+        self.logger.trace(msg, *args, **kwargs)
+
     def info(self, msg: object, *args: object, **kwargs: object) -> None:
         self.logger.info(msg, *args, **kwargs)
+
+    def notice(self, msg: object, *args: object, **kwargs: object) -> None:
+        """输出 NOTICE 级别日志（青色，正常但值得知道的事件）。"""
+        self.logger.notice(msg, *args, **kwargs)
+
+    def success(self, msg: object, *args: object, **kwargs: object) -> None:
+        """输出 SUCCESS 级别日志（绿色，操作成功）。"""
+        self.logger.success(msg, *args, **kwargs)
 
     def warning(self, msg: object, *args: object, **kwargs: object) -> None:
         self.logger.warning(msg, *args, **kwargs)
 
+    def retry(self, msg: object, *args: object, **kwargs: object) -> None:
+        """输出 RETRY 级别日志（橙色，临时故障正在重试）。"""
+        self.logger.retry(msg, *args, **kwargs)
+
     def error(self, msg: object, *args: object, **kwargs: object) -> None:
         self.logger.error(msg, *args, **kwargs)
 
+    def fail(self, msg: object, *args: object, **kwargs: object) -> None:
+        """输出 FAIL 级别日志（粉红色，失败但不致命）。"""
+        self.logger.fail(msg, *args, **kwargs)
+
     def critical(self, msg: object, *args: object, **kwargs: object) -> None:
         self.logger.critical(msg, *args, **kwargs)
+
+    def audit(self, msg: object, *args: object, **kwargs: object) -> None:
+        """输出 AUDIT 级别日志（紫色，审计专用）。"""
+        self.logger.audit(msg, *args, **kwargs)
+
+    def announcement(self, msg: object, *args: object, **kwargs: object) -> None:
+        """输出 ANNOUNCEMENT 级别日志（蓝色，最高优先级广播）。"""
+        self.logger.announcement(msg, *args, **kwargs)
+
+    def metric(self, msg: object, *args: object, **kwargs: object) -> None:
+        """输出 METRIC 级别日志（白色，打点数据专用）。"""
+        self.logger.metric(msg, *args, **kwargs)
 
     def __getattr__(self, item: str) -> object:
         """将未显式实现的属性和方法转发到底层 logger。"""
